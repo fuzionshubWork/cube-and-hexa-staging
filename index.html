@@ -75,6 +75,75 @@
       <div id="unity-warning"> </div>
     </div>
     <script>
+      // ===== Dynamic loading icon (GameBull /context) ==============================
+      // The loading screen renders BEFORE Unity boots, so C# cannot set this - it has to
+      // happen here. Asks GameBull whether an admin has uploaded a per-game icon and, if so,
+      // swaps #unity-logo to it. Every failure path keeps the static baked-in icon.
+      //
+      // Fire-and-forget: never blocks or delays the Unity build download.
+      (function applyPartnerLoadingIcon() {
+        var DEFAULT_API_BASE = "https://api.staging.g-b.store";
+        var TIMEOUT_MS = 4000;
+
+        try {
+          var q          = new URLSearchParams(window.location.search);
+          var tenantSlug = q.get("tenantSlug");
+          var token      = q.get("sessionToken") || q.get("bootToken") || q.get("token");
+          var apiBase    = q.get("apiBase") || DEFAULT_API_BASE;
+          var gameId     = q.get("gameId");
+
+          // gameId is read from the URL only - never hardcoded. A guessed id that does not
+          // match this game is still a VALID id for a different game, which would silently
+          // show that game's logo on this loading screen. Missing id = keep the static icon.
+          //
+          // Missing tenant or token likewise means there is nothing to ask for: the static
+          // icon stays, with no error and no delay.
+          if (!tenantSlug || !token || !gameId) { return; }
+
+          var controller = new AbortController();
+          var timer = setTimeout(function () { controller.abort(); }, TIMEOUT_MS);
+
+          var url = apiBase.replace(/\/+$/, "")
+                  + "/play/games/" + encodeURIComponent(gameId)
+                  + "/context?tenantSlug=" + encodeURIComponent(tenantSlug);
+
+          fetch(url, {
+            method: "GET",
+            headers: { "Authorization": "Bearer " + token },
+            signal: controller.signal
+          })
+            .then(function (r) { clearTimeout(timer); return r.ok ? r.json() : null; })
+            .then(function (data) {
+              var c = (data && data.customization) || {};
+
+              // PER-GAME fields only. logoUrl / tenantLogoUrl / assets[] are tenant-wide and
+              // return another game's artwork on a shared test tenant.
+              var iconUrl =
+                (typeof c.gameLogoUrl   === "string" && c.gameLogoUrl)   ? c.gameLogoUrl   :
+                (typeof c.gameBannerUrl === "string" && c.gameBannerUrl) ? c.gameBannerUrl : null;
+
+              if (!iconUrl) { return; }   // admin has not uploaded one - keep the static icon
+
+              // Preload, and only swap once it has actually decoded, so a slow or broken
+              // image never flashes over the loading screen.
+              var img = new Image();
+              img.onload = function () {
+                var el = document.querySelector("#unity-logo");
+                if (el) {
+                  el.style.backgroundImage =
+                    'url("' + iconUrl.replace(/"/g, "%22") + '")';
+                }
+              };
+              img.onerror = function () { /* keep the static icon */ };
+              img.src = iconUrl;
+            })
+            .catch(function () { clearTimeout(timer); /* keep the static icon */ });
+        } catch (e) {
+          /* keep the static icon */
+        }
+      })();
+      // =============================================================================
+
       var canvas = document.querySelector("#unity-canvas");
 
       // ===== Responsive letterbox: largest rect of the game's aspect that fits, centered =====
